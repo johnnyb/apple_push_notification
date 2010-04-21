@@ -38,24 +38,40 @@ module ApplePushNotification
   end
   
   self.apn_enviroment = :development
-  
-  def send_notification options
+ 
+  def socket_for_notifications(force_new = false)
     raise "Missing apple push notification certificate" unless @@apn_cert
 
-    ctx = OpenSSL::SSL::SSLContext.new
-    ctx.key = OpenSSL::PKey::RSA.new(@@apn_cert)
-    ctx.cert = OpenSSL::X509::Certificate.new(@@apn_cert)
+    @ssl_socket = nil if force_new
 
-    s = TCPSocket.new(@@apn_host, APN_PORT)
-    ssl = OpenSSL::SSL::SSLSocket.new(s, ctx)
-    ssl.sync = true
-    ssl.connect
+    @ssl_socket ||= begin
+      ctx = OpenSSL::SSL::SSLContext.new
+      ctx.key = OpenSSL::PKey::RSA.new(@@apn_cert)
+      ctx.cert = OpenSSL::X509::Certificate.new(@@apn_cert)
 
-    ssl.write(self.apn_message_for_sending(options))
-    ssl.close
-    s.close
+      s = TCPSocket.new(@@apn_host, APN_PORT)
+      ssl = OpenSSL::SSL::SSLSocket.new(s, ctx)
+      ssl.sync = true
+      ssl.connect
+
+      ssl
+    end
+
+    return @ssl_socket
+  end
+ 
+  def send_notification options
+    msg = self.apn_message_for_sending(options)
+    socket_for_notifications.write(msg)
   rescue SocketError => error
-    raise "Error while sending notifications: #{error}"
+    # Try again with a new connection
+    begin
+      logger.warn("Retrying notification: #{error}")
+      socket_for_notifications(true).write(msg)
+    rescue
+      logger.warn("Error while sending notifications: #{$!}")
+      raise "Error while sending notifications: #{$!}"
+    end
   end
   
   def self.send_notification token, options = {}

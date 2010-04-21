@@ -13,6 +13,7 @@ module ApplePushNotification
   end
 
   APN_PORT = 2195
+  APN_FEEDBACK_PORT = 2196
   @@apn_cert = nil
   @@apn_host = nil
   
@@ -31,6 +32,7 @@ module ApplePushNotification
   def self.apn_enviroment= enviroment
     @@apn_enviroment = enviroment.to_sym
     @@apn_host = self.apn_production? ? "gateway.push.apple.com" : "gateway.sandbox.push.apple.com"
+    @@apn_feedback_host = self.apn_production? ? "feedback.push.apple.com" : "feedback.sandbox.push.apple.com"
     cert = self.apn_production? ? "apn_production.pem" : "apn_development.pem"
     path = File.join(File.expand_path(RAILS_ROOT), "config", "certs", cert)
     @@apn_cert = File.exists?(path) ? File.read(path) : nil
@@ -38,6 +40,40 @@ module ApplePushNotification
   end
   
   self.apn_enviroment = :development
+
+  def process_feedback_notifications(&block)
+    begin
+      ctx = OpenSSL::SSL::SSLContext.new
+      ctx.key = OpenSSL::PKey::RSA.new(@@apn_cert)
+      ctx.cert = OpenSSL::X509::Certificate.new(@@apn_cert)
+
+      s = TCPSocket.new(@@apn_feedback_host, APN_FEEDBACK_PORT)
+      ssl = OpenSSL::SSL::SSLSocket.new(s, ctx)
+      ssl.sync = true
+      ssl.connect
+
+      while(!ssl.closed?)
+        feedback_record = ssl.read(38)
+        if feedback_record.length != 38
+          logger.warn("Bad record: #{feedback_record}")
+          break
+        else
+          time_t = feedback_record[0..3]
+          token = feedback_record[6..37].unpack('H*').first
+          feedback_info = {
+		:device_token => token,
+		:time_t => time_t
+          }
+          yield(feedback_info)
+        end
+      end
+
+      ssl.close
+      s.close
+    rescue
+      logger.warn("error during SSL feedback: #{$!}")
+    end 
+  end
  
   def socket_for_notifications(force_new = false)
     raise "Missing apple push notification certificate" unless @@apn_cert
